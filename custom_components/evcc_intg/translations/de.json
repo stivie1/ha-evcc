@@ -442,6 +442,10 @@
       "forecast_feedin": {"name": "Einspeisetarife"},
       "forecast_planner": {"name": "Planertarife"},
 
+      "evopt_battery_charging_power": {"name": "Optimizer: Ladeenergie"},
+      "evopt_battery_discharging_power": {"name": "Optimizer: Entladeenergie"},
+      "evopt_battery_charged_total": {"name": "Optimizer: Gespeicherte Energie"},
+
       "pvaction": {"name": "PV Aktivität [CODE]"},
       "pvaction_value": {"name": "PV Aktivität"},
       "pvremaining": {"name": "PV verbleibend"},

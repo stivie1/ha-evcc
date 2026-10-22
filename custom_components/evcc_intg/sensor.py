@@ -40,6 +40,7 @@ from .const import (
     SENSOR_ENTITIES_PER_VEHICLE,
     SENSOR_ENTITIES_PER_CIRCUIT,
     SENSOR_ENTITIES_PER_METER,
+    SENSOR_ENTITIES_PER_OPTIMIZER_BATTERY,
     TAG_TO_CONTENT_KEY,
     ExtSensorEntityDescription
 )
@@ -89,6 +90,31 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
 
         entity = EvccSensor(coordinator, description)
         entities.append(entity)
+
+    # Optimizer battery arrays can include vehicles and are not ordered consistently.
+    # Build entities from the site's battery devices, then resolve their optimizer index by
+    # matching the stable device name and requiring type="battery".
+    battery_devices = coordinator.read_tag(Tag.BATTERY_AS_OBJ) or []
+    if isinstance(battery_devices, dict):
+        battery_devices = list(battery_devices.values())
+    if isinstance(battery_devices, list):
+        seen_battery_names = set()
+        for battery in battery_devices:
+            if not isinstance(battery, dict):
+                continue
+            battery_name = battery.get("name")
+            if not isinstance(battery_name, str) or not battery_name or battery_name in seen_battery_names:
+                continue
+            seen_battery_names.add(battery_name)
+            stable_name = camel_to_snake(battery_name)
+            for a_stub in SENSOR_ENTITIES_PER_OPTIMIZER_BATTERY:
+                description = replace(
+                    a_stub,
+                    key=f"evoptbattery_{stable_name}_{a_stub.key.removeprefix('evopt_battery_')}",
+                    name_addon=battery.get("title") or battery_name,
+                    optimizer_battery_name=battery_name,
+                )
+                entities.append(EvccSensor(coordinator, description))
 
     # loadpoint sensors...
     multi_loadpoint_config = len(coordinator._loadpoint) > 1
@@ -476,6 +502,25 @@ class EvccSensor(EvccBaseEntity, SensorEntity, RestoreEntity):
             self._last_calculated_key = None
             self._last_calculated_value = None
 
+    def _optimizer_battery_index(self):
+        battery_name = self.entity_description.optimizer_battery_name
+        if battery_name is None:
+            return None
+
+        details = self.coordinator.read_tag(Tag.EVOPT_DETAILS_OBJECT, self.lp_idx)
+        batteries = details.get(JSONKEY_EVOPT_DETAILS_BATTERYDETAILS, []) if isinstance(details, dict) else []
+        if not isinstance(batteries, list):
+            return None
+
+        for index, battery in enumerate(batteries):
+            if (
+                isinstance(battery, dict)
+                and battery.get("type") == "battery"
+                and battery.get("name") == battery_name
+            ):
+                return index
+        return None
+
     @property
     def extra_state_attributes(self):
         """Return sensor attributes"""
@@ -504,27 +549,37 @@ class EvccSensor(EvccBaseEntity, SensorEntity, RestoreEntity):
                     # details...
                     a_details_obj = None
                     a_ts = None
+                    battery_index = None
+                    if self.entity_description.optimizer_battery_name is not None:
+                        battery_index = self._optimizer_battery_index()
+                        if battery_index is None:
+                            return None
+
                     if self.tag == Tag.EVOPT_RESULT_OBJECT and len(self.entity_description.json_idx) > 2:
                         if self.entity_description.json_idx[2] in [JSONKEY_EVOPT_RES_BATTERIES_AINDEX_CHARGED_TOTAL,
                                                                    JSONKEY_EVOPT_RES_BATTERIES_AINDEX_CHARGING_POWER,
                                                                    JSONKEY_EVOPT_RES_BATTERIES_AINDEX_DISCHARGING_POWER]:
 
-                            name_index = int(self.entity_description.json_idx[1])
+                            name_index = battery_index if battery_index is not None else int(self.entity_description.json_idx[1])
                             details_obj = self.coordinator.read_tag(Tag.EVOPT_DETAILS_OBJECT, self.lp_idx)
-                            if len(details_obj[JSONKEY_EVOPT_DETAILS_BATTERYDETAILS]) > name_index:
+                            battery_details = details_obj.get(JSONKEY_EVOPT_DETAILS_BATTERYDETAILS, []) if isinstance(details_obj, dict) else []
+                            if isinstance(battery_details, list) and len(battery_details) > name_index:
                                 a_details_obj = details_obj[JSONKEY_EVOPT_DETAILS_BATTERYDETAILS][name_index]
 
-                            if len(details_obj[JSONKEY_EVOPT_DETAILS_TIMESTAMP]) > name_index:
-                                a_ts = details_obj[JSONKEY_EVOPT_DETAILS_TIMESTAMP][name_index]
+                            timestamps = details_obj.get(JSONKEY_EVOPT_DETAILS_TIMESTAMP, []) if isinstance(details_obj, dict) else []
+                            if isinstance(timestamps, list) and len(timestamps) > name_index:
+                                a_ts = timestamps[name_index]
 
                             # *big sigh* - all is an array - but for WHATEVER reason the timestamp info
                             # is only AVAILABLE as a single entry in the list - yes, I know evopt is 'experimental'
                             # but this came out of nowhere!
-                            elif len(details_obj[JSONKEY_EVOPT_DETAILS_TIMESTAMP]) == 1:
-                                a_ts = details_obj[JSONKEY_EVOPT_DETAILS_TIMESTAMP][0]
+                            elif isinstance(timestamps, list) and len(timestamps) == 1:
+                                a_ts = timestamps[0]
 
                     for idx, key in enumerate(self.entity_description.json_idx[:-1]):
                         try:
+                            if idx == 1 and battery_index is not None:
+                                key = battery_index
                             value = value[key]
                         except (IndexError, KeyError, TypeError):
                             # we brute force our way through the dict/list and if there is an index error,
@@ -721,7 +776,15 @@ class EvccSensor(EvccBaseEntity, SensorEntity, RestoreEntity):
                 value = self.coordinator.read_tag(self.tag, self.lp_idx, self.evcc_internal_id)
 
             if hasattr(self.entity_description, "json_idx") and self.entity_description.json_idx is not None:
+                battery_index = None
+                if self.entity_description.optimizer_battery_name is not None:
+                    battery_index = self._optimizer_battery_index()
+                    if battery_index is None:
+                        return None
+
                 for idx, key in enumerate(self.entity_description.json_idx):
+                    if idx == 1 and battery_index is not None:
+                        key = battery_index
                     if isinstance(value, (list, dict)):
                         if isinstance(key, int) and len(value) > key:
                             value = value[key]
