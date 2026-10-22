@@ -91,23 +91,17 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
         entity = EvccSensor(coordinator, description)
         entities.append(entity)
 
-    # Optimizer battery arrays can include vehicles and are not ordered consistently.
-    # Build entities from the site's battery devices, then resolve their optimizer index by
-    # matching the stable device name and requiring type="battery".
-    battery_devices = coordinator.read_tag(Tag.BATTERY_AS_OBJ) or []
-    if isinstance(battery_devices, dict):
-        battery_devices = list(battery_devices.values())
-    if not battery_devices:
-        optimizer_details = coordinator.read_tag(Tag.EVOPT_DETAILS_OBJECT) or {}
-        optimizer_batteries = optimizer_details.get(JSONKEY_EVOPT_DETAILS_BATTERYDETAILS, [])
-        if isinstance(optimizer_batteries, list):
-            battery_devices = [
-                battery for battery in optimizer_batteries
-                if isinstance(battery, dict) and battery.get("type") == "battery"
-            ]
-    if isinstance(battery_devices, list):
+    # Optimizer entries can include vehicles and their order is not stable.
+    # Give every named entry its own entity and resolve its current index by name.
+    optimizer_details = coordinator.read_tag(Tag.EVOPT_DETAILS_OBJECT) or {}
+    optimizer_batteries = optimizer_details.get(JSONKEY_EVOPT_DETAILS_BATTERYDETAILS, [])
+    if not optimizer_batteries:
+        optimizer_batteries = coordinator.read_tag(Tag.BATTERY_AS_OBJ) or []
+        if isinstance(optimizer_batteries, dict):
+            optimizer_batteries = list(optimizer_batteries.values())
+    if isinstance(optimizer_batteries, list):
         seen_battery_names = set()
-        for battery in battery_devices:
+        for battery in optimizer_batteries:
             if not isinstance(battery, dict):
                 continue
             battery_name = battery.get("name")
@@ -523,7 +517,6 @@ class EvccSensor(EvccBaseEntity, SensorEntity, RestoreEntity):
         for index, battery in enumerate(batteries):
             if (
                 isinstance(battery, dict)
-                and battery.get("type") == "battery"
                 and battery.get("name") == battery_name
             ):
                 return index
