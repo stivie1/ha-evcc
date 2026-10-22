@@ -97,6 +97,14 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
     battery_devices = coordinator.read_tag(Tag.BATTERY_AS_OBJ) or []
     if isinstance(battery_devices, dict):
         battery_devices = list(battery_devices.values())
+    if not battery_devices:
+        optimizer_details = coordinator.read_tag(Tag.EVOPT_DETAILS_OBJECT) or {}
+        optimizer_batteries = optimizer_details.get(JSONKEY_EVOPT_DETAILS_BATTERYDETAILS, [])
+        if isinstance(optimizer_batteries, list):
+            battery_devices = [
+                battery for battery in optimizer_batteries
+                if isinstance(battery, dict) and battery.get("type") == "battery"
+            ]
     if isinstance(battery_devices, list):
         seen_battery_names = set()
         for battery in battery_devices:
